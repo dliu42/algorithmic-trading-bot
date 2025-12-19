@@ -1,1 +1,1 @@
-# My Trading Algorithm
+# My Trading Algorithm Bot
