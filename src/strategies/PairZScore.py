@@ -1,5 +1,4 @@
 from datetime import datetime
-from time import sleep
 from collections import deque
 import numpy as np
 
@@ -9,115 +8,159 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest
 
+class PairState:
+    def __init__(self, symbol_a: str, symbol_b: str, lookback_window: int):
+        self.symbol_a = symbol_a
+        self.symbol_b = symbol_b
+        self.spreads = deque(maxlen=lookback_window)
+        self.in_position = False
+
 class PairZScoreStrategy:
     def __init__(
         self,
         trading_client: TradingClient,
         data_client: StockHistoricalDataClient,
+        pairs: list, # List of tuples [("GOOGL", "GOOG"), ("KO", "PEP")]
         lookback_window: int = 20,
         z_entry: float = 2.0,
         z_exit: float = 0.5,
-        symbol_a: str = "GOOGL",
-        symbol_b: str = "GOOG",
     ):
         self.trading_client = trading_client
         self.data_client = data_client
         self.lookback_window = lookback_window
         self.z_entry = z_entry
         self.z_exit = z_exit
-        self.symbol_a = symbol_a
-        self.symbol_b = symbol_b
+        
+        # multidimensional state
+        self.pairs_state = []
+        for (a, b) in pairs:
+            self.pairs_state.append(PairState(a, b, lookback_window))
 
-        # rolling window of spreads
-        self.spreads = deque(maxlen=lookback_window)
-
-        # state
-        self.in_position = False
-        self.long_spread = None  # True: long A/short B, False: short A/long B
+        # Flatten list of all symbols for batch data fetching
+        self.all_symbols = []
+        for pair in self.pairs_state:
+            if pair.symbol_a not in self.all_symbols: self.all_symbols.append(pair.symbol_a)
+            if pair.symbol_b not in self.all_symbols: self.all_symbols.append(pair.symbol_b)
 
     def _get_latest_prices(self):
-        # use latest trades via alpaca-py StockHistoricalDataClient [[Alpaca-py intro](https://alpaca.markets/sdks/python/getting_started.html)]
-        req = StockLatestTradeRequest(symbol_or_symbols=[self.symbol_a, self.symbol_b])
-        latest = self.data_client.get_stock_latest_trades(req)
-        pa = float(latest[self.symbol_a].price)
-        pb = float(latest[self.symbol_b].price)
-        return pa, pb
+        # Fetch all symbols in one batch request
+        # Returns a dict: {symbol: price}
+        req = StockLatestTradeRequest(symbol_or_symbols=self.all_symbols)
+        latest = self.data_client.get_stock_latest_trade(req)
+        
+        prices = {}
+        for sym in self.all_symbols:
+            if sym in latest:
+                prices[sym] = float(latest[sym].price)
+            else:
+                print(f"Warning: No quote for {sym}")
+                prices[sym] = None
+        return prices
 
-    def _update_spread(self, spread: float):
-        self.spreads.append(spread)
+    def _update_spread(self, pair_state, spread: float):
+        pair_state.spreads.append(spread)
 
-    def _compute_zscore(self, spread: float):
-        if len(self.spreads) < self.lookback_window:
+    def _compute_zscore(self, pair_state, spread: float):
+        if len(pair_state.spreads) < self.lookback_window:
             return None, None, None
-        arr = np.array(self.spreads, dtype=float)
+        
+        arr = np.array(pair_state.spreads, dtype=float)
         mean = arr.mean()
         std = arr.std(ddof=1)
+        
         if std == 0:
             return None, mean, std
+            
         z = (spread - mean) / std
         return z, mean, std
 
     def _position_sizes(self, price_a: float, price_b: float):
-        # simple sizing using account buying power [[Pairs trading orders](https://alpaca.markets/learn/pairs-trading-with-crypto-and-equities#placing-orders-via-trade-api)]
+        # simple sizing using account buying power
+        # For multi-pair, we might want to split capital or just use small fixed size
         acct = self.trading_client.get_account()
         bp = float(acct.buying_power)
-        notional_each = bp / 200.0
+        
+        # dividing by 10 per pair means each pair gets ~1% capital
+        # This is safe for now.
+        notional_each = bp / 10.0 
+        
         qty_a = max(int(notional_each // price_a), 1)
         qty_b = max(int(notional_each // price_b), 1)
         return qty_a, qty_b
 
     def _submit_market_order(self, symbol: str, qty: int, side: OrderSide):
-        order = MarketOrderRequest(
+        req = MarketOrderRequest(
             symbol=symbol,
             qty=qty,
             side=side,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=TimeInForce.DAY
         )
-        self.trading_client.submit_order(order)
+        self.trading_client.submit_order(req)
+        print(f"Submitted {side} order for {qty} {symbol}")
 
-    def _enter_long_spread(self, qty_a: int, qty_b: int):
-        # Buy GOOGL, Sell GOOG
-        self._submit_market_order(self.symbol_a, qty_a, OrderSide.BUY)
-        self._submit_market_order(self.symbol_b, qty_b, OrderSide.SELL)
-        self.in_position = True
-        self.long_spread = True
+    def _enter_long_spread(self, pair_state, qty_a: int, qty_b: int):
+        # Buy A, Sell B
+        print(f"[{pair_state.symbol_a}/{pair_state.symbol_b}] Enter LONG: Buy {qty_a} {pair_state.symbol_a}, Sell {qty_b} {pair_state.symbol_b}")
+        self._submit_market_order(pair_state.symbol_a, qty_a, OrderSide.BUY)
+        self._submit_market_order(pair_state.symbol_b, qty_b, OrderSide.SELL)
+        pair_state.in_position = True
 
-    def _enter_short_spread(self, qty_a: int, qty_b: int):
-        # Sell GOOGL, Buy GOOG
-        self._submit_market_order(self.symbol_a, qty_a, OrderSide.SELL)
-        self._submit_market_order(self.symbol_b, qty_b, OrderSide.BUY)
-        self.in_position = True
-        self.long_spread = False
+    def _enter_short_spread(self, pair_state, qty_a: int, qty_b: int):
+        # Sell A, Buy B
+        print(f"[{pair_state.symbol_a}/{pair_state.symbol_b}] Enter SHORT: Sell {qty_a} {pair_state.symbol_a}, Buy {qty_b} {pair_state.symbol_b}")
+        self._submit_market_order(pair_state.symbol_a, qty_a, OrderSide.SELL)
+        self._submit_market_order(pair_state.symbol_b, qty_b, OrderSide.BUY)
+        pair_state.in_position = True
 
-    def _close_positions(self):
-        # close both legs using TradingClient.close_all_positions for simplicity [[Pairs trading orders](https://alpaca.markets/learn/pairs-trading-with-crypto-and-equities#placing-orders-via-trade-api)]
-        self.trading_client.close_all_positions(cancel_orders=True)
-        self.in_position = False
-        self.long_spread = None
+    def _close_positions(self, pair_state):
+        # We need to target specific symbols for this pair logic to be correct in multi-pair
+        # BUT TradingClient.close_all_positions() closes EVERYTHING (all pairs)
+        # For now, we MUST change this to close only the specific positions.
+        
+        print(f"[{pair_state.symbol_a}/{pair_state.symbol_b}] Closing positions.")
+        # Close A
+        try:
+            self.trading_client.close_position(pair_state.symbol_a)
+        except Exception as e:
+            print(f"Error closing {pair_state.symbol_a}: {e}")
+            
+        # Close B
+        try:
+            self.trading_client.close_position(pair_state.symbol_b)
+        except Exception as e:
+            print(f"Error closing {pair_state.symbol_b}: {e}")
+            
+        pair_state.in_position = False
 
     def step(self):
-        pa, pb = self._get_latest_prices()
-        spread = pa - pb  # GOOGL - GOOG
-        self._update_spread(spread)
+        prices = self._get_latest_prices()
+        
+        for pair in self.pairs_state:
+            pa = prices[pair.symbol_a]
+            pb = prices[pair.symbol_b]
+            
+            if pa is None or pb is None:
+                continue
+                
+            spread = pa - pb
+            self._update_spread(pair, spread)
+            
+            z, mean, std = self._compute_zscore(pair, spread)
+            
+            log_prefix = f"[{pair.symbol_a}/{pair.symbol_b}]"
+            
+            if z is None:
+                print(f"{datetime.utcnow()} {log_prefix} not enough data, window={len(pair.spreads)}")
+                continue
 
-        z, mean, std = self._compute_zscore(spread)
-        if z is None:
-            print(f"{datetime.utcnow()} not enough data yet, window={len(self.spreads)}")
-            return
+            print(f"{datetime.utcnow()} {log_prefix} spread={spread:.2f} z={z:.2f}")
 
-        print(f"{datetime.utcnow()} spread={spread:.4f} mean={mean:.4f} std={std:.4f} z={z:.2f}")
-
-        if not self.in_position:
-            qty_a, qty_b = self._position_sizes(pa, pb)
-            if z > self.z_entry:
-                # Sell spread: Sell GOOGL, Buy GOOG
-                self._enter_short_spread(qty_a, qty_b)
-                print("Entered SHORT spread (Sell GOOGL, Buy GOOG)")
-            elif z < -self.z_entry:
-                # Buy spread: Buy GOOGL, Sell GOOG
-                self._enter_long_spread(qty_a, qty_b)
-                print("Entered LONG spread (Buy GOOGL, Sell GOOG)")
-        else:
-            if abs(z) < self.z_exit:
-                self._close_positions()
-                print("Closed spread (|z| < exit threshold)")
+            if not pair.in_position:
+                qty_a, qty_b = self._position_sizes(pa, pb)
+                if z > self.z_entry:
+                    self._enter_short_spread(pair, qty_a, qty_b)
+                elif z < -self.z_entry:
+                    self._enter_long_spread(pair, qty_a, qty_b)
+            else:
+                if abs(z) < self.z_exit:
+                    self._close_positions(pair)

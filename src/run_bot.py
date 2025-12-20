@@ -4,6 +4,7 @@ import pytz
 from time import sleep
 from account import TradingAccount
 from strategies.PairZScore import PairZScoreStrategy
+from backtest.BTPairZScore import BTPairZScore
 from logger import DualLogger
 
 def print_status(account, now):
@@ -14,26 +15,45 @@ def print_status(account, now):
 def get_strategy(strategy_name, trading_client, data_client):
     strat = None
     if strategy_name == 'PairZScore':
+        pairs_to_trade = [("GOOGL", "GOOG"), ("KO", "PEP")]
         strat = PairZScoreStrategy(
             trading_client=trading_client,
             data_client=data_client,
+            pairs=pairs_to_trade,
             lookback_window=20,
             z_entry=2.0,
             z_exit=0.5,
-            symbol_a="GOOGL",
-            symbol_b="GOOG"
         )
-        print("Strategy: PairZScore")
+        print("Strategy: PairZScore with pairs:", pairs_to_trade)
     return strat
+
+def backtest(strategy_name, data_client):
+    if strategy_name == 'PairZScore':
+        pairs_to_trade = [("GOOG", "GOOGL"), ("KO", "PEP")]
+        bt = BTPairZScore(
+            data_client=data_client,
+            pairs=pairs_to_trade,
+            lookback_window=20,
+            z_entry=2.0,
+            z_exit=0.5,
+        )
+        bt.backtest(date_yyyymmdd="2025-12-18")
 
 def main():
     parser = argparse.ArgumentParser(description='Run Trading Bot')
+
     parser.add_argument('--account', type=str, required=True, 
                         choices=['PAPER', 'REAL'],
                         help='Account type to use: PAPER or REAL')
+
     parser.add_argument('--strategy', type=str, required=True, 
                         choices=['PairZScore'],
                         help='Strategy to use: PairZScore')
+
+    parser.add_argument('--backtest', type=str, required=True, 
+                        choices=['true', 'false'],
+                        help='Backtest mode: true or false')
+
     args = parser.parse_args()
 
     try:
@@ -71,7 +91,17 @@ def main():
         
         print("...............")
 
-        print("Starting strategy loop...")
+        if args.backtest == 'true':
+            print("Backtesting Set to True...")
+            backtest(args.strategy, data_client)
+            print("Backtesting completed.")
+            return
+        else:
+            print("Backtesting Set to False...")
+
+        print("This is for trading through the Alpaca's account")
+        print("Starting Real Strategy loop...")
+        
         last_status_time = None
 
         while True:
@@ -106,7 +136,7 @@ def main():
             else:
                 print(f"[{now.strftime('%H:%M:%S')}] Market not open yet. Waiting...")
                 sleep(60)
-                
+
             print("...............")
 
     except Exception as e:

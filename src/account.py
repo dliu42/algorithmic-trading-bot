@@ -27,6 +27,7 @@ class TradingAccount:
         self.client = TradingClient(api_key=api_key, secret_key=secret_key, paper=self.paper)
         self.account = self.client.get_account() 
         self.data_client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+        
     # Account Information
     def get_account_type(self):
         return self.account_type
