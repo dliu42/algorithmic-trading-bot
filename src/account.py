@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.data.historical import StockHistoricalDataClient
 
 class TradingAccount:
     def __init__(self, account_type: str):
@@ -25,7 +26,7 @@ class TradingAccount:
             
         self.client = TradingClient(api_key=api_key, secret_key=secret_key, paper=self.paper)
         self.account = self.client.get_account() 
-
+        self.data_client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
     # Account Information
     def get_account_type(self):
         return self.account_type
@@ -66,7 +67,7 @@ class TradingAccount:
             else:
                 raise ValueError("type must be either 'BUY' or 'SELL'")
 
-            market_order_data = MarketOrderData(
+            market_order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty,
                 side=side,

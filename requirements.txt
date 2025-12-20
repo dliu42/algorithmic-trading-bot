@@ -1,0 +1,7 @@
+alpaca-py
+pandas
+pytz
+datetime
+dotenv
+argparse
+numpy
