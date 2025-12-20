@@ -61,7 +61,7 @@ class PairZScoreStrategy:
         # simple sizing using account buying power [[Pairs trading orders](https://alpaca.markets/learn/pairs-trading-with-crypto-and-equities#placing-orders-via-trade-api)]
         acct = self.trading_client.get_account()
         bp = float(acct.buying_power)
-        notional_each = bp / 2.0
+        notional_each = bp / 200.0
         qty_a = max(int(notional_each // price_a), 1)
         qty_b = max(int(notional_each // price_b), 1)
         return qty_a, qty_b
