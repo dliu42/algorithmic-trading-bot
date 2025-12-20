@@ -10,4 +10,8 @@ This Trading Bot runs on [Alpaca's](https://alpaca.markets/) trading accounts.
 
 ## Strategies
 - Pair Z-Scores
-- MACD Crossover (Coming Soon)
+- Basis Swaps (coming soon)
+
+## Things I want to look into
+- Interest rate relative value
+- MACD Crossover strategies
