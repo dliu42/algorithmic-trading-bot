@@ -29,7 +29,7 @@ def get_strategy(strategy_name, trading_client, data_client):
 
 def backtest(strategy_name, data_client):
     if strategy_name == 'PairZScore':
-        pairs_to_trade = [("GOOG", "GOOGL"), ("KO", "PEP")]
+        pairs_to_trade = [("GOOG", "GOOGL"), ("KO", "PEP"), ("FOX", "FOXA")]
         bt = BTPairZScore(
             data_client=data_client,
             pairs=pairs_to_trade,
@@ -37,7 +37,45 @@ def backtest(strategy_name, data_client):
             z_entry=2.0,
             z_exit=0.5,
         )
-        bt.backtest(date_yyyymmdd="2025-12-18")
+
+    # backtest from start_date to end_date, and print it all into one log file
+    # print final P&L at the end
+    
+    start_date = datetime(2024, 1, 1)
+    end_date = datetime(2024, 12, 31)
+    current_date = start_date
+    
+    print("\n" + "="*50)
+    print(f"STARTING BACKTEST: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    print(f"Initial Portfolio Value: ${bt.bt_cash:,.2f}")
+    print("="*50 + "\n")
+
+    initial_portfolio_value = bt.bt_cash
+
+    while current_date <= end_date:
+        # Skip weekends (0=Mon, 6=Sun)
+        if current_date.weekday() < 5:
+            date_str = current_date.strftime("%Y-%m-%d")
+            print(f"\n>>> Running Backtest for {date_str}...")
+            try:
+                bt.backtest(date_yyyymmdd=date_str)
+            except Exception as e:
+                # log error to file, and keep going
+                print(f"Error running backtest for {date_str}: {str(e)}")
+        current_date += timedelta(days=1)
+        
+    final_portfolio_value = bt.bt_cash
+    total_pnl = final_portfolio_value - initial_portfolio_value
+    return_pct = (total_pnl / initial_portfolio_value) * 100.0
+    
+    print("\n" + "="*50)
+    print(f"BACKTEST COMPLETE: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    print("="*50)
+    print(f"Initial Value:  ${initial_portfolio_value:,.2f}")
+    print(f"Final Value:    ${final_portfolio_value:,.2f}")
+    print(f"Total P&L:      ${total_pnl:,.2f}")
+    print(f"Return:         {return_pct:.2f}%")
+    print("="*50 + "\n")
 
 def main():
     parser = argparse.ArgumentParser(description='Run Trading Bot')
